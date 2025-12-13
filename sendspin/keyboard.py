@@ -272,6 +272,13 @@ async def keyboard_loop(
             await handler.execute(key)
             continue
 
+        # Handle 'g' for switch group
+        if not input_buffer and key in "gG":
+            if ui:
+                ui.highlight_shortcut("switch")
+            await handler.execute("sw")
+            continue
+
         # Handle space for play/pause toggle
         if not input_buffer and key == " ":
             if ui:

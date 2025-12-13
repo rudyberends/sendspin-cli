@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Self
 
+from aiosendspin.models.types import PlaybackStateType
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from aiosendspin.models.types import PlaybackStateType
-
 
 class _RefreshableLayout:
     """A renderable that rebuilds on each render cycle."""
 
-    def __init__(self, ui: "SendspinUI") -> None:
+    def __init__(self, ui: SendspinUI) -> None:
         self._ui = ui
 
     def __rich_console__(
@@ -111,7 +110,7 @@ class SendspinUI:
             content.add_column()
             content.add_row("")
             content.add_row(Text("Press <space> to start playing", style="dim"))
-            content.add_row("")
+            content.add_row(Text("Press g to join an existing session", style="dim"))
             content.add_row("")
             content.add_row("")
             return Panel(content, title="Now Playing", border_style="blue", expand=expand)
@@ -139,7 +138,9 @@ class SendspinUI:
         shortcuts.append("<space>", style=self._shortcut_style("space"))
         shortcuts.append(f" {space_label}  ", style="dim")
         shortcuts.append("→", style=self._shortcut_style("next"))
-        shortcuts.append(" next", style="dim")
+        shortcuts.append(" next  ", style="dim")
+        shortcuts.append("g", style=self._shortcut_style("switch"))
+        shortcuts.append(" change group", style="dim")
         content.add_row(shortcuts)
 
         return Panel(content, title="Now Playing", border_style="blue", expand=expand)
