@@ -334,12 +334,9 @@ class SendspinUI:
         album: str | None = None,
     ) -> None:
         """Update track metadata."""
-        if title is not None:
-            self._state.title = title
-        if artist is not None:
-            self._state.artist = artist
-        if album is not None:
-            self._state.album = album
+        self._state.title = title
+        self._state.artist = artist
+        self._state.album = album
         self.refresh()
 
     def set_progress(self, progress_ms: int | None, duration_ms: int | None) -> None:
@@ -347,6 +344,13 @@ class SendspinUI:
         self._state.track_progress_ms = progress_ms
         self._state.track_duration_ms = duration_ms
         self._state.progress_updated_at = time.monotonic()
+        self.refresh()
+
+    def clear_progress(self) -> None:
+        """Clear track progress completely, preventing any interpolation."""
+        self._state.track_progress_ms = None
+        self._state.track_duration_ms = None
+        self._state.progress_updated_at = 0.0
         self.refresh()
 
     def set_volume(self, volume: int | None, *, muted: bool | None = None) -> None:

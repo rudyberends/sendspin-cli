@@ -799,15 +799,25 @@ async def _handle_metadata_update(
 async def _handle_group_update(
     state: CLIState, ui: SendspinUI | None, payload: GroupUpdateServerPayload
 ) -> None:
+    # Always clear metadata on group update - will be restored if new group has metadata
+    state.title = None
+    state.artist = None
+    state.album = None
+    state.track_progress = None
+    state.track_duration = None
+    if ui is not None:
+        ui.set_metadata(title=None, artist=None, album=None)
+        ui.clear_progress()
+
+    if payload.group_id:
+        _print_event(f"Group ID: {payload.group_id}")
+    if payload.group_name:
+        _print_event(f"Group name: {payload.group_name}")
     if payload.playback_state:
         state.playback_state = payload.playback_state
         if ui is not None:
             ui.set_playback_state(payload.playback_state)
         _print_event(f"Playback state: {payload.playback_state.value}")
-    if payload.group_id:
-        _print_event(f"Group ID: {payload.group_id}")
-    if payload.group_name:
-        _print_event(f"Group name: {payload.group_name}")
 
 
 async def _handle_server_state(
