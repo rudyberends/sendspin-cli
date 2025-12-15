@@ -14,7 +14,7 @@ from aiosendspin.models.types import MediaCommand, PlaybackStateType, PlayerStat
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
 
-    from sendspin.cli import AudioStreamHandler, CLIState
+    from sendspin.app import AudioStreamHandler, AppState
     from sendspin.ui import SendspinUI
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class CommandHandler:
     def __init__(
         self,
         client: SendspinClient,
-        state: CLIState,
+        state: AppState,
         audio_handler: AudioStreamHandler,
         ui: SendspinUI | None = None,
         print_event: Callable[[str], None] | None = None,
@@ -102,7 +102,7 @@ class CommandHandler:
 
 async def keyboard_loop(
     client: SendspinClient,
-    state: CLIState,
+    state: AppState,
     audio_handler: AudioStreamHandler,
     ui: SendspinUI | None = None,
     print_event: Callable[[str], None] | None = None,
