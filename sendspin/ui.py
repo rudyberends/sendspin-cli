@@ -20,9 +20,7 @@ class _RefreshableLayout:
     def __init__(self, ui: SendspinUI) -> None:
         self._ui = ui
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         """Rebuild and yield the layout on each render."""
         yield self._ui._build_layout()  # noqa: SLF001
 
@@ -59,7 +57,6 @@ class UIState:
     # Shortcut highlight
     highlighted_shortcut: str | None = None
     highlight_time: float = 0.0
-
 
 
 class SendspinUI:
@@ -333,6 +330,19 @@ class SendspinUI:
 
     def set_playback_state(self, state: PlaybackStateType) -> None:
         """Update playback state."""
+        # When leaving PLAYING, capture interpolated progress so display doesn't jump
+        if (
+            self._state.playback_state == PlaybackStateType.PLAYING
+            and state != PlaybackStateType.PLAYING
+            and self._state.progress_updated_at > 0
+            and self._state.track_duration_ms
+        ):
+            elapsed_ms = (time.monotonic() - self._state.progress_updated_at) * 1000
+            interpolated = (self._state.track_progress_ms or 0) + int(elapsed_ms)
+            self._state.track_progress_ms = min(self._state.track_duration_ms, interpolated)
+            # Reset timestamp so resume starts fresh from captured position
+            self._state.progress_updated_at = time.monotonic()
+
         self._state.playback_state = state
         self.refresh()
 
