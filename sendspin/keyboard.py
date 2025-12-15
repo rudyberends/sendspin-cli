@@ -199,7 +199,7 @@ class CommandHandler:
 # For keys that need case-insensitive matching, use lowercase
 _SHORTCUT_KEYS: dict[str, tuple[str | None, str]] = {
     "s": (None, "s"),
-    "m": ("mute", "m"),
+    "m": ("mute", "pm"),
     "g": ("switch", "sw"),
     " ": ("space", "toggle"),
     "[": ("delay-", "delay - 10"),
@@ -210,8 +210,8 @@ _SHORTCUT_KEYS: dict[str, tuple[str | None, str]] = {
 _ARROW_KEYS: dict[str, tuple[str, str]] = {
     readchar.key.RIGHT: ("next", "n"),
     readchar.key.LEFT: ("prev", "b"),
-    readchar.key.UP: ("up", "+"),
-    readchar.key.DOWN: ("down", "-"),
+    readchar.key.UP: ("up", "pvol+"),
+    readchar.key.DOWN: ("down", "pvol-"),
 }
 
 
