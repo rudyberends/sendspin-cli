@@ -165,7 +165,10 @@ class CommandHandler:
     def _handle_delay_command(self, parts: list[str]) -> None:
         """Process delay commands."""
         if len(parts) == 1:
-            self._print_event(f"Static delay: {self._client.static_delay_ms:.1f} ms")
+            delay = self._client.static_delay_ms
+            self._print_event(
+                f"Delay: {delay:.0f}ms (use --static-delay-ms {delay:.0f} to persist)"
+            )
             return
         if len(parts) == 3 and parts[1] in {"+", "-"}:
             try:
@@ -178,7 +181,6 @@ class CommandHandler:
             self._client.set_static_delay_ms(self._client.static_delay_ms + delta)
             if self._ui is not None:
                 self._ui.set_delay(self._client.static_delay_ms)
-            self._print_event(f"Static delay: {self._client.static_delay_ms:.1f} ms")
             return
         if len(parts) == 2:
             try:
@@ -189,7 +191,6 @@ class CommandHandler:
             self._client.set_static_delay_ms(value)
             if self._ui is not None:
                 self._ui.set_delay(self._client.static_delay_ms)
-            self._print_event(f"Static delay: {self._client.static_delay_ms:.1f} ms")
             return
         self._print_event("Usage: delay [<ms>|+ <ms>|- <ms>]")
 
