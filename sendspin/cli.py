@@ -716,6 +716,7 @@ async def main_async(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915
             ui = SendspinUI()
             _set_ui(ui)
             ui.start()
+            ui.set_delay(client.static_delay_ms)
 
         try:
             client.set_metadata_listener(

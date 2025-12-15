@@ -54,6 +54,9 @@ class UIState:
     player_volume: int = 100
     player_muted: bool = False
 
+    # Delay
+    delay_ms: float = 0.0
+
     # Shortcut highlight
     highlighted_shortcut: str | None = None
     highlight_time: float = 0.0
@@ -273,7 +276,7 @@ class SendspinUI:
 
     def _build_status_line(self) -> Table:
         """Build the status line at the bottom."""
-        # Left side: connection status
+        # Left side: connection status + delay
         left = Text()
         left.append("  ")  # Align with panel content
         if self._state.connected and self._state.server_url:
@@ -286,11 +289,21 @@ class SendspinUI:
                 left.append(f"Connected to {self._state.group_name} at {host}", style="dim")
             else:
                 left.append(f"Connected to {host}", style="dim")
+            # Add delay info
+            delay = self._state.delay_ms
+            if delay >= 0:
+                left.append(f" · Delay: +{delay:.0f}ms", style="dim")
+            else:
+                left.append(f" · Delay: {delay:.0f}ms", style="dim")
         else:
             left.append(self._state.status_message, style="dim yellow")
 
-        # Right side: quit shortcut
+        # Right side: delay shortcuts + quit shortcut
         right = Text()
+        right.append("[", style=self._shortcut_style("delay-"))
+        right.append("/", style="dim")
+        right.append("]", style=self._shortcut_style("delay+"))
+        right.append(" adjust delay  ", style="dim")
         right.append("q", style=self._shortcut_style("quit"))
         right.append(" quit", style="dim")
 
@@ -384,6 +397,11 @@ class SendspinUI:
         """Update player volume."""
         self._state.player_volume = volume
         self._state.player_muted = muted
+        self.refresh()
+
+    def set_delay(self, delay_ms: float) -> None:
+        """Update the delay display."""
+        self._state.delay_ms = delay_ms
         self.refresh()
 
     def start(self) -> None:

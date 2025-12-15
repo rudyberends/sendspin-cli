@@ -176,6 +176,8 @@ class CommandHandler:
             if parts[1] == "-":
                 delta = -delta
             self._client.set_static_delay_ms(self._client.static_delay_ms + delta)
+            if self._ui is not None:
+                self._ui.set_delay(self._client.static_delay_ms)
             self._print_event(f"Static delay: {self._client.static_delay_ms:.1f} ms")
             return
         if len(parts) == 2:
@@ -185,9 +187,31 @@ class CommandHandler:
                 self._print_event("Invalid delay value")
                 return
             self._client.set_static_delay_ms(value)
+            if self._ui is not None:
+                self._ui.set_delay(self._client.static_delay_ms)
             self._print_event(f"Static delay: {self._client.static_delay_ms:.1f} ms")
             return
         self._print_event("Usage: delay [<ms>|+ <ms>|- <ms>]")
+
+
+# Shortcut key mappings: key -> (highlight_name, command)
+# For keys that need case-insensitive matching, use lowercase
+_SHORTCUT_KEYS: dict[str, tuple[str | None, str]] = {
+    "s": (None, "s"),
+    "m": ("mute", "m"),
+    "g": ("switch", "sw"),
+    " ": ("space", "toggle"),
+    "[": ("delay-", "delay - 10"),
+    "]": ("delay+", "delay + 10"),
+}
+
+# Arrow key mappings
+_ARROW_KEYS: dict[str, tuple[str, str]] = {
+    readchar.key.RIGHT: ("next", "n"),
+    readchar.key.LEFT: ("prev", "b"),
+    readchar.key.UP: ("up", "+"),
+    readchar.key.DOWN: ("down", "-"),
+}
 
 
 async def keyboard_loop(
@@ -213,33 +237,19 @@ async def keyboard_loop(
         try:
             # Run blocking readkey in executor to not block the event loop
             key = await loop.run_in_executor(None, readchar.readkey)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, KeyboardInterrupt):
             break
 
         # Handle Ctrl+C
         if key == "\x03":
             break
 
-        # Handle arrow keys
-        if key == readchar.key.RIGHT:
+        # Handle arrow keys via dispatch table
+        if key in _ARROW_KEYS:
+            highlight, cmd = _ARROW_KEYS[key]
             if ui:
-                ui.highlight_shortcut("next")
-            await handler.execute("n")
-            continue
-        if key == readchar.key.LEFT:
-            if ui:
-                ui.highlight_shortcut("prev")
-            await handler.execute("b")
-            continue
-        if key == readchar.key.UP:
-            if ui:
-                ui.highlight_shortcut("up")
-            await handler.execute("+")
-            continue
-        if key == readchar.key.DOWN:
-            if ui:
-                ui.highlight_shortcut("down")
-            await handler.execute("-")
+                ui.highlight_shortcut(highlight)
+            await handler.execute(cmd)
             continue
 
         # Ignore any other escape sequences
@@ -265,26 +275,15 @@ async def keyboard_loop(
                 ui.highlight_shortcut("quit")
             break
 
-        # Handle single-char shortcuts (immediate execution)
-        if not input_buffer and key in "sSmM":
-            if key.lower() == "m" and ui:
-                ui.highlight_shortcut("mute")
-            await handler.execute(key)
-            continue
-
-        # Handle 'g' for switch group
-        if not input_buffer and key in "gG":
-            if ui:
-                ui.highlight_shortcut("switch")
-            await handler.execute("sw")
-            continue
-
-        # Handle space for play/pause toggle
-        if not input_buffer and key == " ":
-            if ui:
-                ui.highlight_shortcut("space")
-            await handler.execute("toggle")
-            continue
+        # Handle shortcut keys via dispatch table (case-insensitive)
+        if not input_buffer:
+            shortcut = _SHORTCUT_KEYS.get(key.lower())
+            if shortcut is not None:
+                shortcut_highlight, cmd = shortcut
+                if shortcut_highlight and ui:
+                    ui.highlight_shortcut(shortcut_highlight)
+                await handler.execute(cmd)
+                continue
 
         # Accumulate other characters
         if len(key) == 1 and key.isprintable():
