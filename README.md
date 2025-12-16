@@ -45,6 +45,19 @@ The player will automatically connect to a Sendspin server on your local network
 
 ## Configuration Options
 
+### Server Connection
+
+By default, the player automatically discovers Sendspin servers on your local network using mDNS. You can also connect directly to a specific server:
+
+```bash
+sendspin --url ws://192.168.1.100:8080/sendspin
+```
+
+**List available servers on the network:**
+```bash
+sendspin --list-servers
+```
+
 ### Client Identification
 
 If you want to run multiple players on the **same computer**, you can specify unique identifiers:
@@ -79,21 +92,11 @@ This is particularly useful for headless devices or when you want to route audio
 
 The player supports adjusting playback delay to compensate for audio hardware latency or achieve better synchronization across devices.
 
-**Setting delay at startup:**
 ```bash
 sendspin --static-delay-ms -100
 ```
 
 > **Note:** Based on limited testing, the delay value is typically a negative number (e.g., `-100` or `-150`) to compensate for audio hardware buffering.
-
-**Adjusting delay in real-time:**
-While the player is running, you can use the `delay` command:
-- `delay` - Show current delay value
-- `delay <ms>` - Set absolute delay (e.g., `delay -100`)
-- `delay + <ms>` - Increase delay (e.g., `delay + 50`)
-- `delay - <ms>` - Decrease delay (e.g., `delay - 25`)
-
-The synchronization will seamlessly adjust to the new delay value within a couple of seconds.
 
 ### Debugging & Troubleshooting
 
