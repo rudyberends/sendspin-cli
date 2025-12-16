@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Self
 
 from aiosendspin.models.types import PlaybackStateType
@@ -30,6 +30,16 @@ SHORTCUT_HIGHLIGHT_DURATION = 0.15
 
 
 @dataclass
+class DiscoveredServerInfo:
+    """Information about a discovered server for display."""
+
+    name: str
+    url: str
+    host: str
+    port: int
+
+
+@dataclass
 class UIState:
     """Holds state for the UI display."""
 
@@ -38,6 +48,11 @@ class UIState:
     connected: bool = False
     status_message: str = "Initializing..."
     group_name: str | None = None
+
+    # Server selector
+    show_server_selector: bool = False
+    available_servers: list[DiscoveredServerInfo] = field(default_factory=list)
+    selected_server_index: int = 0
 
     # Playback
     playback_state: PlaybackStateType | None = None
@@ -121,10 +136,11 @@ class SendspinUI:
             line2.append(" to join an existing session", style="dim")
             content.add_row(line2)
             line3 = Text()
-            line3.append("Make delay adjustments using ", style="dim")
+            line3.append("Press ", style="dim")
             line3.append("[", style="bold cyan")
             line3.append(" and ", style="dim")
             line3.append("]", style="bold cyan")
+            line3.append(" to adjust audio delay", style="dim")
             content.add_row(line3)
             content.add_row("")
             return Panel(content, title="Now Playing", border_style="blue", expand=expand)
@@ -260,6 +276,57 @@ class SendspinUI:
 
         return Panel(content, title="Connection", border_style="yellow", expand=expand)
 
+    def _build_server_selector_panel(self) -> Panel:
+        """Build the server selector panel."""
+        content = Table.grid()
+        content.add_column()
+
+        if not self._state.available_servers:
+            content.add_row("")
+            content.add_row(Text("Searching for servers...", style="dim"))
+            content.add_row("")
+        else:
+            for i, server in enumerate(self._state.available_servers):
+                is_selected = i == self._state.selected_server_index
+                is_current = server.url == self._state.server_url
+
+                line = Text()
+                if is_selected:
+                    line.append(" > ", style="bold cyan")
+                else:
+                    line.append("   ")
+
+                # Server name
+                name_style = "bold white" if is_selected else "white"
+                line.append(server.name, style=name_style)
+
+                # Current server indicator
+                if is_current:
+                    line.append(" (current)", style="dim green")
+
+                content.add_row(line)
+
+                # Show URL below name
+                url_line = Text()
+                url_line.append("   ")
+                url_style = "cyan" if is_selected else "dim"
+                url_line.append(f"   {server.host}:{server.port}", style=url_style)
+                content.add_row(url_line)
+
+        content.add_row("")
+
+        # Shortcuts
+        shortcuts = Text()
+        shortcuts.append("↑", style=self._shortcut_style("selector-up"))
+        shortcuts.append("/", style="dim")
+        shortcuts.append("↓", style=self._shortcut_style("selector-down"))
+        shortcuts.append(" navigate  ", style="dim")
+        shortcuts.append("<enter>", style=self._shortcut_style("selector-enter"))
+        shortcuts.append(" connect", style="dim")
+        content.add_row(shortcuts)
+
+        return Panel(content, title="Select Server", border_style="cyan")
+
     def _build_layout(self) -> Table:
         """Build the complete UI layout."""
         # Get terminal width and leave 1 char margin to prevent wrapping
@@ -268,6 +335,11 @@ class SendspinUI:
         # Main layout table
         layout = Table.grid(expand=False)
         layout.add_column(width=width)
+
+        # Show server selector if active
+        if self._state.show_server_selector:
+            layout.add_row(self._build_server_selector_panel())
+            return layout
 
         # Top row: Now Playing + Volume
         top_row = Table.grid(expand=True)
@@ -311,12 +383,14 @@ class SendspinUI:
         else:
             left.append(self._state.status_message, style="dim yellow")
 
-        # Right side: delay shortcuts + quit shortcut
+        # Right side: delay shortcuts + server selector + quit shortcut
         right = Text()
         right.append("[", style=self._shortcut_style("delay-"))
         right.append("/", style="dim")
         right.append("]", style=self._shortcut_style("delay+"))
-        right.append(" adjust delay  ", style="dim")
+        right.append(" delay  ", style="dim")
+        right.append("s", style=self._shortcut_style("server"))
+        right.append(" server  ", style="dim")
         right.append("q", style=self._shortcut_style("quit"))
         right.append(" quit", style="dim")
 
@@ -416,6 +490,40 @@ class SendspinUI:
         """Update the delay display."""
         self._state.delay_ms = delay_ms
         self.refresh()
+
+    def show_server_selector(self, servers: list[DiscoveredServerInfo]) -> None:
+        """Show the server selector with available servers."""
+        self._state.available_servers = servers
+        self._state.selected_server_index = 0
+        self._state.show_server_selector = True
+        self.refresh()
+
+    def hide_server_selector(self) -> None:
+        """Hide the server selector."""
+        self._state.show_server_selector = False
+        self.refresh()
+
+    def is_server_selector_visible(self) -> bool:
+        """Check if the server selector is currently visible."""
+        return self._state.show_server_selector
+
+    def move_server_selection(self, delta: int) -> None:
+        """Move the server selection by delta (-1 for up, +1 for down)."""
+        if not self._state.available_servers:
+            return
+        new_index = self._state.selected_server_index + delta
+        self._state.selected_server_index = max(
+            0, min(len(self._state.available_servers) - 1, new_index)
+        )
+        self.refresh()
+
+    def get_selected_server(self) -> DiscoveredServerInfo | None:
+        """Get the currently selected server."""
+        if not self._state.available_servers:
+            return None
+        if 0 <= self._state.selected_server_index < len(self._state.available_servers):
+            return self._state.available_servers[self._state.selected_server_index]
+        return None
 
     def start(self) -> None:
         """Start the live display."""

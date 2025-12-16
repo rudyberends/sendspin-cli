@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 import readchar
 from aiosendspin.models.types import MediaCommand, PlaybackStateType, PlayerStateType
 
+from sendspin.ui import DiscoveredServerInfo
+
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
 
-    from sendspin.app import AudioStreamHandler, AppState
+    from sendspin.app import AppState, AudioStreamHandler
     from sendspin.ui import SendspinUI
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,8 @@ class CommandHandler:
         audio_handler: AudioStreamHandler,
         ui: SendspinUI | None = None,
         print_event: Callable[[str], None] | None = None,
+        get_servers: Callable[[], list[tuple[str, str, str, int]]] | None = None,
+        on_server_selected: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the command handler."""
         self._client = client
@@ -37,6 +41,8 @@ class CommandHandler:
         self._audio_handler = audio_handler
         self._ui = ui
         self._print_event = print_event or (lambda _: None)
+        self._get_servers = get_servers
+        self._on_server_selected = on_server_selected
 
     async def send_media_command(self, command: MediaCommand) -> None:
         """Send a media command with validation."""
@@ -93,6 +99,33 @@ class CommandHandler:
         if self._ui is not None:
             self._ui.set_delay(self._client.static_delay_ms)
 
+    def open_server_selector(self) -> None:
+        """Open the server selector panel."""
+        if self._ui is None or self._get_servers is None:
+            return
+        server_tuples = self._get_servers()
+        servers = [
+            DiscoveredServerInfo(name=name, url=url, host=host, port=port)
+            for name, url, host, port in server_tuples
+        ]
+        self._ui.show_server_selector(servers)
+
+    def close_server_selector(self) -> None:
+        """Close the server selector panel."""
+        if self._ui is not None:
+            self._ui.hide_server_selector()
+
+    async def select_server(self) -> None:
+        """Select the highlighted server and connect to it."""
+        if self._ui is None or self._on_server_selected is None:
+            return
+        server = self._ui.get_selected_server()
+        if server is not None:
+            self._ui.hide_server_selector()
+            # Skip reconnection if already connected to this server
+            if server.url != self._ui.state.server_url:
+                await self._on_server_selected(server.url)
+
 
 async def keyboard_loop(
     client: SendspinClient,
@@ -100,9 +133,23 @@ async def keyboard_loop(
     audio_handler: AudioStreamHandler,
     ui: SendspinUI | None = None,
     print_event: Callable[[str], None] | None = None,
+    get_servers: Callable[[], list[tuple[str, str, str, int]]] | None = None,
+    on_server_selected: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
-    """Run the keyboard input loop."""
-    handler = CommandHandler(client, state, audio_handler, ui, print_event)
+    """Run the keyboard input loop.
+
+    Args:
+        client: Sendspin client instance.
+        state: Application state.
+        audio_handler: Audio stream handler.
+        ui: Optional UI instance.
+        print_event: Function to print events.
+        get_servers: Function that returns list of (name, url, host, port) tuples.
+        on_server_selected: Async callback when a server is selected (receives URL).
+    """
+    handler = CommandHandler(
+        client, state, audio_handler, ui, print_event, get_servers, on_server_selected
+    )
 
     # Key dispatch table: key -> (highlight_name | None, async action)
     # For keys that need case-insensitive matching, use lowercase
@@ -146,11 +193,35 @@ async def keyboard_loop(
         if key == "\x03":
             break
 
+        # Handle server selector mode
+        if ui is not None and ui.is_server_selector_visible():
+            if key == readchar.key.UP:
+                ui.highlight_shortcut("selector-up")
+                ui.move_server_selection(-1)
+                continue
+            if key == readchar.key.DOWN:
+                ui.highlight_shortcut("selector-down")
+                ui.move_server_selection(1)
+                continue
+            if key in ("\r", "\n", readchar.key.ENTER):
+                ui.highlight_shortcut("selector-enter")
+                await handler.select_server()
+                continue
+            # Ignore other keys when selector is open
+            continue
+
         # Handle quit
         if key in "q":
             if ui:
                 ui.highlight_shortcut("quit")
             break
+
+        # Handle 's' to open server selector
+        if key in "sS":
+            if ui:
+                ui.highlight_shortcut("server")
+            handler.open_server_selector()
+            continue
 
         # Handle shortcuts via dispatch table (case-insensitive for letter keys)
         action = shortcuts.get(key) or shortcuts.get(key.lower())

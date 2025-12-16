@@ -206,6 +206,17 @@ class ConnectionManager:
         self._error_backoff = 1.0
         self._max_backoff = max_backoff
         self._last_attempted_url = ""
+        self._pending_url: str | None = None  # URL set by user for server switch
+
+    def set_pending_url(self, url: str) -> None:
+        """Set a pending URL for server switch."""
+        self._pending_url = url
+
+    def consume_pending_url(self) -> str | None:
+        """Get and clear the pending URL if set."""
+        url = self._pending_url
+        self._pending_url = None
+        return url
 
     async def sleep_interruptible(self, duration: float) -> bool:
         """Sleep with keyboard interrupt support.
@@ -278,13 +289,14 @@ class ConnectionManager:
         return None
 
 
-async def connection_loop(
+async def connection_loop(  # noqa: PLR0915
     client: SendspinClient,
     discovery: ServiceDiscovery,
     audio_handler: AudioStreamHandler,
     initial_url: str,
     keyboard_task: asyncio.Task[None],
     print_event: Callable[[str], None],
+    connection_manager: ConnectionManager,
     ui: SendspinUI | None = None,
 ) -> None:
     """
@@ -301,9 +313,10 @@ async def connection_loop(
         initial_url: Initial server URL.
         keyboard_task: Keyboard input task to monitor.
         print_event: Function to print events.
+        connection_manager: Connection manager for reconnection logic.
         ui: Optional UI instance.
     """
-    manager = ConnectionManager(discovery, keyboard_task)
+    manager = connection_manager
     url = initial_url
     manager.set_last_attempted_url(url)
 
@@ -337,6 +350,16 @@ async def connection_loop(
 
             # Clean up audio state
             await audio_handler.cleanup()
+
+            # Check for pending URL from server selection first
+            pending_url = manager.consume_pending_url()
+            if pending_url:
+                url = pending_url
+                manager.reset_backoff()
+                print_event(f"Switching to {url}...")
+                if ui is not None:
+                    ui.set_disconnected(f"Switching to {url}...")
+                continue
 
             # Update URL from discovery
             new_url = discovery.current_url()
@@ -574,15 +597,39 @@ class SendspinApp:
 
                 # Audio player will be created when first audio chunk arrives
 
-                # Create and start keyboard task
+                # Set up signal handler for graceful shutdown on Ctrl+C
+                loop = asyncio.get_running_loop()
+
+                # Forward declaration for on_server_selected closure
+                connection_manager: ConnectionManager | None = None
+
+                def get_servers() -> list[tuple[str, str, str, int]]:
+                    """Get available servers from discovery."""
+                    if self._discovery is None:
+                        return []
+                    return [(s.name, s.url, s.host, s.port) for s in self._discovery.get_servers()]
+
+                async def on_server_selected(new_url: str) -> None:
+                    """Handle server selection by triggering reconnect."""
+                    if connection_manager is None or self._client is None:
+                        return
+                    connection_manager.set_pending_url(new_url)
+                    # Force disconnect to trigger reconnect with new URL
+                    await self._client.disconnect()
+
                 keyboard_task = asyncio.create_task(
                     keyboard_loop(
-                        self._client, self._state, self._audio_handler, self._ui, self._print_event
+                        self._client,
+                        self._state,
+                        self._audio_handler,
+                        self._ui,
+                        self._print_event,
+                        get_servers,
+                        on_server_selected,
                     )
                 )
 
-                # Set up signal handler for graceful shutdown on Ctrl+C
-                loop = asyncio.get_running_loop()
+                connection_manager = ConnectionManager(self._discovery, keyboard_task)
 
                 def signal_handler() -> None:
                     logger.debug("Received interrupt signal, shutting down...")
@@ -602,6 +649,7 @@ class SendspinApp:
                         url,
                         keyboard_task,
                         self._print_event,
+                        connection_manager,
                         self._ui,
                     )
                 except asyncio.CancelledError:
