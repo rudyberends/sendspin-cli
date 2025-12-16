@@ -252,9 +252,7 @@ class ConnectionManager:
         """Increase the backoff duration for the next retry."""
         self._error_backoff = min(self._error_backoff * 2, self._max_backoff)
 
-    async def handle_error_backoff(
-        self, print_event: Callable[[str], None]
-    ) -> bool:
+    async def handle_error_backoff(self, print_event: Callable[[str], None]) -> bool:
         """Sleep for error backoff with keyboard interrupt support.
 
         Returns True if interrupted by keyboard, False if completed normally.
@@ -262,9 +260,7 @@ class ConnectionManager:
         print_event(f"Connection error, retrying in {self._error_backoff:.0f}s...")
         return await self.sleep_interruptible(self._error_backoff)
 
-    async def wait_for_server_reappear(
-        self, print_event: Callable[[str], None]
-    ) -> str | None:
+    async def wait_for_server_reappear(self, print_event: Callable[[str], None]) -> str | None:
         """Wait for server to reappear on the network.
 
         Returns the new URL if server reappears, None if interrupted.
@@ -545,6 +541,9 @@ class SendspinApp:
                     url = await self._discovery.wait_for_first_server()
                     logger.info("Discovered Sendspin server at %s", url)
                     self._print_event(f"Found server at {url}")
+                except asyncio.CancelledError:
+                    # When KeyboardInterrupt occurs during discovery
+                    return 1
                 except Exception:
                     logger.exception("Failed to discover server")
                     return 1
@@ -649,14 +648,10 @@ class SendspinApp:
             )
         )
         client.set_group_update_listener(
-            lambda payload: _handle_group_update(
-                self._state, self._ui, self._print_event, payload
-            )
+            lambda payload: _handle_group_update(self._state, self._ui, self._print_event, payload)
         )
         client.set_controller_state_listener(
-            lambda payload: _handle_server_state(
-                self._state, self._ui, self._print_event, payload
-            )
+            lambda payload: _handle_server_state(self._state, self._ui, self._print_event, payload)
         )
         client.set_stream_start_listener(
             lambda msg: audio_handler.on_stream_start(msg, self._print_event)

@@ -62,9 +62,7 @@ class CommandHandler:
                 self._state.player_volume, muted=self._state.player_muted
             )
         if self._ui is not None:
-            self._ui.set_player_volume(
-                self._state.player_volume, muted=self._state.player_muted
-            )
+            self._ui.set_player_volume(self._state.player_volume, muted=self._state.player_muted)
         await self._client.send_player_state(
             state=PlayerStateType.SYNCHRONIZED,
             volume=self._state.player_volume,
@@ -81,17 +79,13 @@ class CommandHandler:
                 self._state.player_volume, muted=self._state.player_muted
             )
         if self._ui is not None:
-            self._ui.set_player_volume(
-                self._state.player_volume, muted=self._state.player_muted
-            )
+            self._ui.set_player_volume(self._state.player_volume, muted=self._state.player_muted)
         await self._client.send_player_state(
             state=PlayerStateType.SYNCHRONIZED,
             volume=self._state.player_volume,
             muted=self._state.player_muted,
         )
-        self._print_event(
-            "Player muted" if self._state.player_muted else "Player unmuted"
-        )
+        self._print_event("Player muted" if self._state.player_muted else "Player unmuted")
 
     async def adjust_delay(self, delta: float) -> None:
         """Adjust static delay by delta milliseconds."""

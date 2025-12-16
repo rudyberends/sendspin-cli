@@ -24,6 +24,7 @@ class DiscoveredServer:
     host: str
     port: int
 
+
 SERVICE_TYPE = "_sendspin-server._tcp.local."
 DEFAULT_PATH = "/sendspin"
 
