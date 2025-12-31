@@ -20,13 +20,12 @@ if TYPE_CHECKING:
     from aiosendspin.models.metadata import SessionUpdateMetadata
 
 from aiohttp import ClientError
-from aiosendspin.client import PCMFormat, SendspinClient
+from aiosendspin.client import SendspinClient
 from aiosendspin.models.core import (
     DeviceInfo,
     GroupUpdateServerPayload,
     ServerCommandPayload,
     ServerStatePayload,
-    StreamStartMessage,
 )
 from aiosendspin.models.player import (
     ClientHelloPlayerSupport,
@@ -43,7 +42,9 @@ from aiosendspin.models.types import (
     UndefinedField,
 )
 
-from sendspin.audio import AudioDevice, AudioPlayer
+from sendspin.audio import AudioDevice
+from sendspin.audio_connector import AudioStreamHandler
+from sendspin.client_listeners import ClientListenerManager
 from sendspin.discovery import ServiceDiscovery
 from sendspin.keyboard import keyboard_loop
 from sendspin.ui import SendspinUI
@@ -379,75 +380,6 @@ async def connection_loop(  # noqa: PLR0915
             manager.increase_backoff()
 
 
-class AudioStreamHandler:
-    """Manages audio playback state and stream lifecycle."""
-
-    def __init__(self, client: SendspinClient, audio_device: AudioDevice) -> None:
-        """Initialize the audio stream handler.
-
-        Args:
-            client: The Sendspin client instance.
-            audio_device: Audio device to use.
-        """
-        self._client = client
-        self._audio_device = audio_device
-        self.audio_player: AudioPlayer | None = None
-        self._current_format: PCMFormat | None = None
-
-    def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, fmt: PCMFormat) -> None:
-        """Handle incoming audio chunks."""
-        # Initialize or reconfigure audio player if format changed
-        if self.audio_player is None or self._current_format != fmt:
-            if self.audio_player is not None:
-                self.audio_player.clear()
-
-            loop = asyncio.get_running_loop()
-            self.audio_player = AudioPlayer(
-                loop, self._client.compute_play_time, self._client.compute_server_time
-            )
-            self.audio_player.set_format(fmt, device=self._audio_device)
-            self._current_format = fmt
-
-        # Submit audio chunk - AudioPlayer handles timing
-        if self.audio_player is not None:
-            self.audio_player.submit(server_timestamp_us, audio_data)
-
-    def on_stream_start(
-        self, _message: StreamStartMessage, print_event: Callable[[str], None]
-    ) -> None:
-        """Handle stream start by clearing stale audio chunks."""
-        if self.audio_player is not None:
-            self.audio_player.clear()
-            logger.debug("Cleared audio queue on stream start")
-        print_event("Stream started")
-
-    def on_stream_end(self, roles: list[Roles] | None, print_event: Callable[[str], None]) -> None:
-        """Handle stream end by clearing audio queue to prevent desync on resume."""
-        # For the CLI player, we only care about the player role
-        if (roles is None or Roles.PLAYER in roles) and self.audio_player is not None:
-            self.audio_player.clear()
-            logger.debug("Cleared audio queue on stream end")
-            print_event("Stream ended")
-
-    def on_stream_clear(self, roles: list[Roles] | None) -> None:
-        """Handle stream clear by clearing audio queue (e.g., for seek operations)."""
-        # For the CLI player, we only care about the player role
-        if (roles is None or Roles.PLAYER in roles) and self.audio_player is not None:
-            self.audio_player.clear()
-            logger.debug("Cleared audio queue on stream clear")
-
-    def clear_queue(self) -> None:
-        """Clear the audio queue to prevent desync."""
-        if self.audio_player is not None:
-            self.audio_player.clear()
-
-    async def cleanup(self) -> None:
-        """Stop audio player and clear resources."""
-        if self.audio_player is not None:
-            await self.audio_player.stop()
-            self.audio_player = None
-
-
 @dataclass
 class AppConfig:
     """Configuration for the Sendspin application."""
@@ -553,8 +485,10 @@ class SendspinApp:
             )
             self._print_event(f"Using audio device: {config.audio_device.name}")
 
-            # Create audio and stream handlers
-            self._audio_handler = AudioStreamHandler(self._client, audio_device=config.audio_device)
+            listeners = ClientListenerManager()
+
+            self._audio_handler = AudioStreamHandler(audio_device=config.audio_device)
+            self._audio_handler.attach_client(self._client, listeners)
 
             # Create UI for interactive mode (unless headless)
             if sys.stdin.isatty() and not config.headless:
@@ -562,13 +496,12 @@ class SendspinApp:
                 self._ui.start()
                 self._ui.set_delay(self._client.static_delay_ms)
 
+            self._setup_listeners(listeners)
+            listeners.attach(self._client)
+            loop = asyncio.get_running_loop()
+
             try:
-                self._setup_listeners()
-
                 # Audio player will be created when first audio chunk arrives
-
-                # Set up signal handler for graceful shutdown on Ctrl+C
-                loop = asyncio.get_running_loop()
 
                 # Forward declaration for on_server_selected closure
                 connection_manager: ConnectionManager | None = None
@@ -658,42 +591,31 @@ class SendspinApp:
 
         return 0
 
-    def _setup_listeners(self) -> None:
+    def _setup_listeners(self, listeners: ClientListenerManager) -> None:
         """Set up client event listeners."""
         assert self._client is not None
-        assert self._audio_handler is not None
-
-        # Capture references for use in lambdas (type narrowing)
         client = self._client
-        audio_handler = self._audio_handler
+        loop = asyncio.get_running_loop()
 
-        client.set_metadata_listener(
+        listeners.add_metadata_listener(
             lambda payload: _handle_metadata_update(
                 self._state, self._ui, self._print_event, payload
             )
         )
-        client.set_group_update_listener(
+        listeners.add_group_update_listener(
             lambda payload: _handle_group_update(self._state, self._ui, self._print_event, payload)
         )
-        client.set_controller_state_listener(
+        listeners.add_controller_state_listener(
             lambda payload: _handle_server_state(self._state, self._ui, self._print_event, payload)
         )
-        client.set_stream_start_listener(
-            lambda msg: audio_handler.on_stream_start(msg, self._print_event)
-        )
-        client.set_stream_end_listener(
-            lambda roles: audio_handler.on_stream_end(roles, self._print_event)
-        )
-        client.set_stream_clear_listener(audio_handler.on_stream_clear)
-        client.set_audio_chunk_listener(audio_handler.on_audio_chunk)
-        client.set_server_command_listener(
+        listeners.add_server_command_listener(
             lambda payload: _handle_server_command(
-                self._state, audio_handler, client, self._ui, self._print_event, payload
+                self._state, client, self._ui, self._print_event, payload, loop
             )
         )
 
 
-async def _handle_metadata_update(
+def _handle_metadata_update(
     state: AppState,
     ui: SendspinUI | None,
     print_event: Callable[[str], None],
@@ -711,12 +633,13 @@ async def _handle_metadata_update(
         print_event(state.describe())
 
 
-async def _handle_group_update(
+def _handle_group_update(
     state: AppState,
     ui: SendspinUI | None,
     print_event: Callable[[str], None],
     payload: GroupUpdateServerPayload,
 ) -> None:
+    """Handle group update messages."""
     # Only clear metadata when actually switching to a different group
     group_changed = payload.group_id is not None and payload.group_id != state.group_id
     if group_changed:
@@ -742,7 +665,7 @@ async def _handle_group_update(
         print_event(f"Playback state: {payload.playback_state.value}")
 
 
-async def _handle_server_state(
+def _handle_server_state(
     state: AppState,
     ui: SendspinUI | None,
     print_event: Callable[[str], None],
@@ -767,13 +690,13 @@ async def _handle_server_state(
             ui.set_volume(state.volume, muted=state.muted)
 
 
-async def _handle_server_command(
+def _handle_server_command(
     state: AppState,
-    audio_handler: AudioStreamHandler,
     client: SendspinClient,
     ui: SendspinUI | None,
     print_event: Callable[[str], None],
     payload: ServerCommandPayload,
+    loop: asyncio.AbstractEventLoop,
 ) -> None:
     """Handle server/command messages for player volume/mute control."""
     if payload.player is None:
@@ -783,22 +706,20 @@ async def _handle_server_command(
 
     if player_cmd.command == PlayerCommand.VOLUME and player_cmd.volume is not None:
         state.player_volume = player_cmd.volume
-        if audio_handler.audio_player is not None:
-            audio_handler.audio_player.set_volume(state.player_volume, muted=state.player_muted)
         if ui is not None:
             ui.set_player_volume(state.player_volume, muted=state.player_muted)
         print_event(f"Server set player volume: {player_cmd.volume}%")
     elif player_cmd.command == PlayerCommand.MUTE and player_cmd.mute is not None:
         state.player_muted = player_cmd.mute
-        if audio_handler.audio_player is not None:
-            audio_handler.audio_player.set_volume(state.player_volume, muted=state.player_muted)
         if ui is not None:
             ui.set_player_volume(state.player_volume, muted=state.player_muted)
         print_event("Server muted player" if player_cmd.mute else "Server unmuted player")
 
     # Send state update back to server per spec
-    await client.send_player_state(
-        state=PlayerStateType.SYNCHRONIZED,
-        volume=state.player_volume,
-        muted=state.player_muted,
+    loop.create_task(
+        client.send_player_state(
+            state=PlayerStateType.SYNCHRONIZED,
+            volume=state.player_volume,
+            muted=state.player_muted,
+        )
     )
