@@ -220,6 +220,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Discover and list available Sendspin servers on the network",
     )
     parser.add_argument(
+        "--list-clients",
+        action="store_true",
+        help="Discover and list available Sendspin clients on the network",
+    )
+    parser.add_argument(
         "--disable-mpris",
         action="store_true",
         help="Disable MPRIS integration",
@@ -250,6 +255,27 @@ async def list_servers() -> None:
             print(f"    Host: {server.host}:{server.port}")
     except Exception as e:  # noqa: BLE001
         print(f"Error discovering servers: {e}")
+        sys.exit(1)
+
+
+async def list_clients() -> None:
+    """Discover and list all Sendspin clients on the network."""
+    from sendspin.discovery import discover_clients
+
+    try:
+        clients = await discover_clients(discovery_time=3.0)
+        if not clients:
+            print("No Sendspin clients found.")
+            return
+
+        print(f"\nFound {len(clients)} client(s):")
+        print()
+        for client in clients:
+            print(f"  {client.name}")
+            print(f"    URL:  {client.url}")
+            print(f"    Host: {client.host}:{client.port}")
+    except Exception as e:  # noqa: BLE001
+        print(f"Error discovering clients: {e}")
         sys.exit(1)
 
 
@@ -392,6 +418,10 @@ def main() -> int:
 
     if args.list_servers:
         asyncio.run(list_servers())
+        return 0
+
+    if args.list_clients:
+        asyncio.run(list_clients())
         return 0
 
     try:
