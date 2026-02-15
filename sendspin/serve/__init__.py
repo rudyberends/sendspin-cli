@@ -19,7 +19,7 @@ from aiosendspin.server import (
     SendspinServer,
     SendspinGroup,
 )
-from aiosendspin.server.stream import MediaStream
+from aiosendspin.server.push_stream import PushStream
 
 from sendspin.utils import create_task
 
@@ -30,7 +30,7 @@ from .chromecast import (
     parse_cast_url,
 )
 from .server import SendspinPlayerServer
-from .source import decode_audio
+from .source import AudioSource, decode_audio
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class ServeConfig:
 
     source: str
     source_format: str | None = None
-    port: int = 8928
+    port: int = 8927
     name: str = "Sendspin Server"
     clients: list[str] | None = None
 
@@ -82,6 +82,17 @@ def _windows_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[st
         return
     # For all other exceptions, use the default handler
     loop.default_exception_handler(context)
+
+
+async def _stream_audio(stream: PushStream, source: AudioSource) -> None:
+    """Push decoded PCM audio into a PushStream until cancelled."""
+    try:
+        async for pcm_chunk in source.generator:
+            stream.prepare_audio(pcm_chunk, source.format)
+            await stream.commit_audio()
+            await stream.sleep_to_limit_buffer(max_buffer_us=5_000_000)
+    finally:
+        stream.stop()
 
 
 async def run_server(config: ServeConfig) -> int:
@@ -103,7 +114,7 @@ async def run_server(config: ServeConfig) -> int:
 
     client_connected = asyncio.Event()
     active_group: SendspinGroup | None = None
-    play_media_task: asyncio.Task[int] | None = None
+    play_media_task: asyncio.Task[None] | None = None
     shutdown_requested = False
 
     def handle_sigint() -> None:
@@ -190,7 +201,7 @@ async def run_server(config: ServeConfig) -> int:
                     chromecast_clients.append(cc_client)
                     print(f"Chromecast connected: {cc_client.friendly_name}")
                 else:
-                    await server.connect_to_client(client_url)
+                    server.connect_to_client(client_url)
             except Exception as e:
                 logger.warning("Failed to connect to client %s: %s", client_url, e)
                 print(f"Warning: Failed to connect to client {client_url}: {e}")
@@ -222,11 +233,8 @@ async def run_server(config: ServeConfig) -> int:
             # Decode and stream audio
             try:
                 audio_source = await decode_audio(config.source, source_format=config.source_format)
-                media_stream = MediaStream(
-                    main_channel_source=audio_source.generator,
-                    main_channel_format=audio_source.format,
-                )
-                play_media_task = create_task(active_group.play_media(media_stream))
+                stream = active_group.start_stream()
+                play_media_task = create_task(_stream_audio(stream, audio_source))
                 await play_media_task
             except asyncio.CancelledError:
                 pass
