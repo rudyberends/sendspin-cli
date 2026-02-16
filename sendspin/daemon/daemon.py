@@ -8,7 +8,7 @@ import logging
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from aiohttp import ClientError, web
 from aiosendspin.client import ClientListener, SendspinClient
@@ -18,7 +18,12 @@ from aiosendspin.models.core import (
     ServerCommandPayload,
 )
 from aiosendspin.models.player import ClientHelloPlayerSupport
-from aiosendspin.models.source import SourceControl
+from aiosendspin.models.source import (
+    ClientHelloSourceSupport,
+    SourceControl,
+    SourceFeatures,
+    SourceFormat,
+)
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from aiosendspin.models.types import (
     AudioCodec,
@@ -32,10 +37,8 @@ from sendspin.audio import AudioDevice, detect_supported_audio_formats
 from sendspin.audio_connector import AudioStreamHandler
 from sendspin.hooks import run_hook
 from sendspin.settings import ClientSettings
+from sendspin.source_stream import SourceStreamConfig, SourceStreamer
 from sendspin.utils import create_task, get_device_info
-
-if TYPE_CHECKING:
-    from sendspin.source_stream import SourceStreamer
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +108,6 @@ class SendspinDaemon:
             client_roles.extend([Roles.METADATA, Roles.CONTROLLER])
         source_support = None
         if self._args.source_enabled:
-            from aiosendspin.models.source import (
-                ClientHelloSourceSupport,
-                SourceFeatures,
-                SourceFormat,
-            )
-
             client_roles.append(Roles("source@v1"))
             controls = list(self._source_control_hooks().keys()) or None
             source_support = ClientHelloSourceSupport(
@@ -357,7 +354,6 @@ class SendspinDaemon:
             return
         if self._source_task is not None and not self._source_task.done():
             return
-        from sendspin.source_stream import SourceStreamConfig, SourceStreamer
 
         device: str | int | None = self._args.source_device
         if isinstance(device, str) and device.isdigit():
