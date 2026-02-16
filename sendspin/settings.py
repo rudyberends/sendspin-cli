@@ -115,6 +115,23 @@ class ClientSettings(BaseSettings):
     use_mpris: bool = True
     hook_start: str | None = None
     hook_stop: str | None = None
+    source_enabled: bool = False
+    source_input: str = "linein"
+    source_device: str | None = None
+    source_codec: str = "pcm"
+    source_sample_rate: int = 48_000
+    source_channels: int = 2
+    source_bit_depth: int = 16
+    source_frame_ms: int = 20
+    source_sine_hz: float = 440.0
+    source_signal_threshold_db: float = -45.0
+    source_signal_hold_ms: float = 300.0
+    source_hook_play: str | None = None
+    source_hook_pause: str | None = None
+    source_hook_next: str | None = None
+    source_hook_previous: str | None = None
+    source_hook_activate: str | None = None
+    source_hook_deactivate: str | None = None
 
     def update(
         self,
@@ -131,6 +148,23 @@ class ClientSettings(BaseSettings):
         use_mpris: bool | None = None,
         hook_start: str | None = None,
         hook_stop: str | None = None,
+        source_enabled: bool | None = None,
+        source_input: str | None = None,
+        source_device: str | None = None,
+        source_codec: str | None = None,
+        source_sample_rate: int | None = None,
+        source_channels: int | None = None,
+        source_bit_depth: int | None = None,
+        source_frame_ms: int | None = None,
+        source_sine_hz: float | None = None,
+        source_signal_threshold_db: float | None = None,
+        source_signal_hold_ms: float | None = None,
+        source_hook_play: str | None = None,
+        source_hook_pause: str | None = None,
+        source_hook_next: str | None = None,
+        source_hook_previous: str | None = None,
+        source_hook_activate: str | None = None,
+        source_hook_deactivate: str | None = None,
     ) -> None:
         """Update settings fields. Only changed fields trigger a save."""
         changed = False
@@ -157,6 +191,23 @@ class ClientSettings(BaseSettings):
                     "use_mpris": use_mpris,
                     "hook_start": hook_start,
                     "hook_stop": hook_stop,
+                    "source_enabled": source_enabled,
+                    "source_input": source_input,
+                    "source_device": source_device,
+                    "source_codec": source_codec,
+                    "source_sample_rate": source_sample_rate,
+                    "source_channels": source_channels,
+                    "source_bit_depth": source_bit_depth,
+                    "source_frame_ms": source_frame_ms,
+                    "source_sine_hz": source_sine_hz,
+                    "source_signal_threshold_db": source_signal_threshold_db,
+                    "source_signal_hold_ms": source_signal_hold_ms,
+                    "source_hook_play": source_hook_play,
+                    "source_hook_pause": source_hook_pause,
+                    "source_hook_next": source_hook_next,
+                    "source_hook_previous": source_hook_previous,
+                    "source_hook_activate": source_hook_activate,
+                    "source_hook_deactivate": source_hook_deactivate,
                 }
             )
             or changed
@@ -186,6 +237,23 @@ class ClientSettings(BaseSettings):
             self.use_mpris = data.get("use_mpris", True)
             self.hook_start = data.get("hook_start")
             self.hook_stop = data.get("hook_stop")
+            self.source_enabled = data.get("source_enabled", False)
+            self.source_input = data.get("source_input", "linein")
+            self.source_device = data.get("source_device")
+            self.source_codec = data.get("source_codec", "pcm")
+            self.source_sample_rate = data.get("source_sample_rate", 48_000)
+            self.source_channels = data.get("source_channels", 2)
+            self.source_bit_depth = data.get("source_bit_depth", 16)
+            self.source_frame_ms = data.get("source_frame_ms", 20)
+            self.source_sine_hz = data.get("source_sine_hz", 440.0)
+            self.source_signal_threshold_db = data.get("source_signal_threshold_db", -45.0)
+            self.source_signal_hold_ms = data.get("source_signal_hold_ms", 300.0)
+            self.source_hook_play = data.get("source_hook_play")
+            self.source_hook_pause = data.get("source_hook_pause")
+            self.source_hook_next = data.get("source_hook_next")
+            self.source_hook_previous = data.get("source_hook_previous")
+            self.source_hook_activate = data.get("source_hook_activate")
+            self.source_hook_deactivate = data.get("source_hook_deactivate")
             logger.info(
                 "Loaded settings from %s: volume=%d%%, muted=%s",
                 self._settings_file,

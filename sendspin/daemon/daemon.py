@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import logging
 import signal
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientError, web
 from aiosendspin.client import ClientListener, SendspinClient
@@ -16,8 +18,10 @@ from aiosendspin.models.core import (
     ServerCommandPayload,
 )
 from aiosendspin.models.player import ClientHelloPlayerSupport
+from aiosendspin.models.source import SourceControl
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from aiosendspin.models.types import (
+    AudioCodec,
     GoodbyeReason,
     PlayerCommand,
     PlayerStateType,
@@ -29,6 +33,9 @@ from sendspin.audio_connector import AudioStreamHandler
 from sendspin.hooks import run_hook
 from sendspin.settings import ClientSettings
 from sendspin.utils import create_task, get_device_info
+
+if TYPE_CHECKING:
+    from sendspin.source_stream import SourceStreamer
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,23 @@ class DaemonArgs:
     use_mpris: bool = True
     hook_start: str | None = None
     hook_stop: str | None = None
+    source_enabled: bool = False
+    source_input: str = "linein"
+    source_device: str | None = None
+    source_codec: str = "pcm"
+    source_sample_rate: int = 48000
+    source_channels: int = 2
+    source_bit_depth: int = 16
+    source_frame_ms: int = 20
+    source_sine_hz: float = 440.0
+    source_signal_threshold_db: float = -45.0
+    source_signal_hold_ms: float = 300.0
+    source_hook_play: str | None = None
+    source_hook_pause: str | None = None
+    source_hook_next: str | None = None
+    source_hook_previous: str | None = None
+    source_hook_activate: str | None = None
+    source_hook_deactivate: str | None = None
 
 
 class SendspinDaemon:
@@ -68,27 +92,57 @@ class SendspinDaemon:
         self._static_delay_ms: float = 0.0
         self._connection_lock: asyncio.Lock | None = None
         self._server_url: str | None = None
+        self._source_task: asyncio.Task[None] | None = None
+        self._source_streaming: asyncio.Event | None = None
+        self._source_unsubscribe: Callable[[], None] | None = None
+        self._source_format_unsubscribe: Callable[[], None] | None = None
+        self._source_streamer: SourceStreamer | None = None
 
     def _create_client(self, static_delay_ms: float = 0.0) -> SendspinClient:
         """Create a new SendspinClient instance."""
         client_roles = [Roles.PLAYER]
         if MPRIS_AVAILABLE and self._args.use_mpris:
             client_roles.extend([Roles.METADATA, Roles.CONTROLLER])
+        source_support = None
+        if self._args.source_enabled:
+            from aiosendspin.models.source import (
+                ClientHelloSourceSupport,
+                SourceFeatures,
+                SourceFormat,
+            )
+
+            client_roles.append(Roles("source@v1"))
+            controls = list(self._source_control_hooks().keys()) or None
+            source_support = ClientHelloSourceSupport(
+                supported_formats=[
+                    SourceFormat(
+                        codec=AudioCodec(self._args.source_codec),
+                        channels=self._args.source_channels,
+                        sample_rate=self._args.source_sample_rate,
+                        bit_depth=self._args.source_bit_depth,
+                    )
+                ],
+                controls=controls,
+                features=SourceFeatures(level=True, line_sense=True),
+            )
 
         supported_formats = detect_supported_audio_formats(self._args.audio_device.index)
 
-        return SendspinClient(
-            client_id=self._args.client_id,
-            client_name=self._args.client_name,
-            roles=client_roles,
-            device_info=get_device_info(),
-            player_support=ClientHelloPlayerSupport(
+        client_kwargs: dict[str, Any] = {
+            "client_id": self._args.client_id,
+            "client_name": self._args.client_name,
+            "roles": client_roles,
+            "device_info": get_device_info(),
+            "player_support": ClientHelloPlayerSupport(
                 supported_formats=supported_formats,
                 buffer_capacity=32_000_000,
                 supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
-            static_delay_ms=static_delay_ms,
-        )
+            "static_delay_ms": static_delay_ms,
+        }
+        if source_support is not None:
+            client_kwargs["source_support"] = source_support
+        return SendspinClient(**client_kwargs)
 
     async def run(self) -> int:
         """Run the daemon."""
@@ -135,6 +189,7 @@ class SendspinDaemon:
         except asyncio.CancelledError:
             logger.debug("Daemon cancelled")
         finally:
+            await self._stop_source_streaming()
             await self._stop_mpris_and_audio()
             if self._client is not None:
                 await self._client.disconnect()
@@ -159,6 +214,8 @@ class SendspinDaemon:
         self._audio_handler.attach_client(self._client)
         self._server_url = self._args.url
         self._client.add_server_command_listener(self._handle_server_command)
+        self._attach_source_command_listener()
+        await self._start_source_streaming()
         await self._connection_loop(self._args.url)
 
     async def _run_server_initiated(self, static_delay_ms: float) -> None:
@@ -219,6 +276,8 @@ class SendspinDaemon:
             self._client = client
             self._audio_handler.attach_client(client)
             client.add_server_command_listener(self._handle_server_command)
+            self._attach_source_command_listener()
+            await self._start_source_streaming()
             if MPRIS_AVAILABLE and self._args.use_mpris:
                 self._mpris = SendspinMpris(client)
                 self._mpris.start()
@@ -252,6 +311,7 @@ class SendspinDaemon:
             # Only cleanup if we're still the active client (not replaced by new connection)
             if self._client is client:
                 await self._stop_mpris_and_audio()
+                await self._stop_source_streaming()
 
     async def _connection_loop(self, url: str) -> None:
         """Run the connection loop with automatic reconnection (client-initiated mode)."""
@@ -290,6 +350,90 @@ class SendspinDaemon:
             except Exception:
                 logger.exception("Unexpected error during connection")
                 break
+
+    async def _start_source_streaming(self) -> None:
+        """Start source streaming worker if source mode is enabled."""
+        if not self._args.source_enabled or self._client is None:
+            return
+        if self._source_task is not None and not self._source_task.done():
+            return
+        from sendspin.source_stream import SourceStreamConfig, SourceStreamer
+
+        device: str | int | None = self._args.source_device
+        if isinstance(device, str) and device.isdigit():
+            device = int(device)
+
+        self._source_streaming = asyncio.Event()
+        self._source_streamer = SourceStreamer(
+            self._client,
+            SourceStreamConfig(
+                codec=AudioCodec(self._args.source_codec),
+                input=self._args.source_input,
+                device=device,
+                sample_rate=self._args.source_sample_rate,
+                channels=self._args.source_channels,
+                bit_depth=self._args.source_bit_depth,
+                frame_ms=self._args.source_frame_ms,
+                signal_threshold_db=self._args.source_signal_threshold_db,
+                signal_hold_ms=self._args.source_signal_hold_ms,
+                sine_hz=self._args.source_sine_hz,
+                control_hooks=self._source_control_hooks(),
+                hook_client_id=self._args.client_id,
+                hook_client_name=self._args.client_name,
+                hook_server_url=self._server_url,
+            ),
+            logger=logger,
+        )
+
+        async def _run_stream() -> None:
+            assert self._source_streaming is not None
+            assert self._source_streamer is not None
+            await self._source_streamer.run(self._source_streaming)
+
+        self._source_task = create_task(_run_stream())
+
+    async def _stop_source_streaming(self) -> None:
+        """Stop source streaming worker and listeners."""
+        if self._source_task is not None:
+            if self._source_streaming is not None:
+                self._source_streaming.clear()
+            self._source_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._source_task
+            self._source_task = None
+        self._source_streaming = None
+        self._source_streamer = None
+        if self._source_unsubscribe is not None:
+            self._source_unsubscribe()
+            self._source_unsubscribe = None
+        if self._source_format_unsubscribe is not None:
+            self._source_format_unsubscribe()
+            self._source_format_unsubscribe = None
+
+    def _attach_source_command_listener(self) -> None:
+        """Attach source command listener when source role is enabled."""
+        if not self._args.source_enabled or self._client is None:
+            return
+        if self._source_unsubscribe is not None:
+            return
+
+        def _on_source_command(payload: Any) -> None:
+            streamer = self._source_streamer
+            if self._source_streaming is None or streamer is None:
+                return
+            create_task(streamer.handle_source_command(payload, self._source_streaming))
+
+        def _on_format_request(payload: Any) -> None:
+            streamer = self._source_streamer
+            if streamer is None:
+                return
+            create_task(streamer.handle_format_request(payload))
+
+        client_any = cast("Any", self._client)
+        self._source_unsubscribe = client_any.add_source_command_listener(_on_source_command)
+        self._source_format_unsubscribe = client_any.add_input_stream_request_format_listener(
+            _on_format_request
+        )
 
     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server commands for player volume/mute control and save to settings."""
@@ -350,3 +494,15 @@ class SendspinDaemon:
                 client_name=self._args.client_name,
             )
         )
+
+    def _source_control_hooks(self) -> dict[SourceControl, str]:
+        """Return configured source control hook mapping."""
+        mapping = {
+            SourceControl.PLAY: self._args.source_hook_play,
+            SourceControl.PAUSE: self._args.source_hook_pause,
+            SourceControl.NEXT: self._args.source_hook_next,
+            SourceControl.PREVIOUS: self._args.source_hook_previous,
+            SourceControl.ACTIVATE: self._args.source_hook_activate,
+            SourceControl.DEACTIVATE: self._args.source_hook_deactivate,
+        }
+        return {control: hook for control, hook in mapping.items() if hook}

@@ -10,11 +10,13 @@ import sys
 import traceback
 from collections.abc import Sequence
 from importlib.metadata import version
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from sendspin.settings import ClientSettings, get_client_settings, get_serve_settings
+from sendspin.utils import create_task, get_device_info
 
 if TYPE_CHECKING:
+    from aiosendspin.models.source import SourceControl
     from sendspin.audio import AudioDevice
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +57,103 @@ def list_audio_devices() -> None:
     except Exception as e:  # noqa: BLE001
         print(f"Error listing audio devices: {e}")
         sys.exit(1)
+
+
+def list_input_devices() -> None:
+    """List all available audio input devices."""
+    try:
+        import sounddevice as sd
+    except OSError as e:
+        if "PortAudio library not found" in str(e):
+            print(PORTAUDIO_NOT_FOUND_MESSAGE)
+            sys.exit(1)
+        raise
+
+    try:
+        devices = sd.query_devices()
+        default_input = sd.default.device[0]
+
+        print("Available audio input devices:")
+        print()
+        listed = 0
+        for i, d in enumerate(devices):
+            max_in = int(d.get("max_input_channels", 0))
+            if max_in <= 0:
+                continue
+            default_marker = " (default)" if i == default_input else ""
+            print(
+                f"  [{i}] {d['name']}{default_marker}\n"
+                f"       Channels: {max_in}, Sample rate: {d['default_samplerate']} Hz"
+            )
+            listed += 1
+        print("\nTo select an input device:\n  sendspin source run --source-device 0")
+        if listed == 0:
+            print("  (No input devices found)")
+
+    except Exception as e:  # noqa: BLE001
+        print(f"Error listing input devices: {e}")
+        sys.exit(1)
+
+
+def _add_source_control_hook_args(parser: argparse.ArgumentParser) -> None:
+    """Add optional source control hook arguments to a parser."""
+    parser.add_argument(
+        "--source-hook-play",
+        type=str,
+        default=None,
+        help="Hook to run when source receives play control",
+    )
+    parser.add_argument(
+        "--source-hook-pause",
+        type=str,
+        default=None,
+        help="Hook to run when source receives pause control",
+    )
+    parser.add_argument(
+        "--source-hook-next",
+        type=str,
+        default=None,
+        help="Hook to run when source receives next control",
+    )
+    parser.add_argument(
+        "--source-hook-previous",
+        type=str,
+        default=None,
+        help="Hook to run when source receives previous control",
+    )
+    parser.add_argument(
+        "--source-hook-activate",
+        type=str,
+        default=None,
+        help="Hook to run when source receives activate control",
+    )
+    parser.add_argument(
+        "--source-hook-deactivate",
+        type=str,
+        default=None,
+        help="Hook to run when source receives deactivate control",
+    )
+
+
+def _resolve_source_control_hooks(args: argparse.Namespace) -> dict[SourceControl, str]:
+    """Build source control -> hook command map from CLI args."""
+    from aiosendspin.models.source import SourceControl
+
+    mapping = {
+        SourceControl.PLAY: args.source_hook_play,
+        SourceControl.PAUSE: args.source_hook_pause,
+        SourceControl.NEXT: args.source_hook_next,
+        SourceControl.PREVIOUS: args.source_hook_previous,
+        SourceControl.ACTIVATE: args.source_hook_activate,
+        SourceControl.DEACTIVATE: args.source_hook_deactivate,
+    }
+    return {control: hook for control, hook in mapping.items() if hook}
+
+
+def _resolve_source_controls(args: argparse.Namespace) -> list[SourceControl] | None:
+    """Build advertised supported source controls from configured hooks."""
+    controls = list(_resolve_source_control_hooks(args).keys())
+    return controls or None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -189,6 +288,113 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
     )
+    daemon_parser.add_argument(
+        "--source",
+        action="store_true",
+        default=None,
+        help="Enable source@v1 input on this daemon",
+    )
+    daemon_parser.add_argument(
+        "--no-source",
+        action="store_false",
+        dest="source",
+        default=None,
+        help="Disable source@v1 input on this daemon",
+    )
+    daemon_parser.add_argument(
+        "--source-input",
+        choices=["sine", "linein"],
+        default=None,
+        help="Source input type",
+    )
+    daemon_parser.add_argument(
+        "--source-device",
+        type=str,
+        default=None,
+        help="Input device name or index for line-in capture",
+    )
+    daemon_parser.add_argument(
+        "--source-codec",
+        choices=["pcm", "opus", "flac"],
+        default=None,
+        help="Audio codec to advertise",
+    )
+    daemon_parser.add_argument(
+        "--source-sample-rate",
+        type=int,
+        default=None,
+        help="Source sample rate in Hz",
+    )
+    daemon_parser.add_argument(
+        "--source-channels",
+        type=int,
+        default=None,
+        help="Source channel count",
+    )
+    daemon_parser.add_argument(
+        "--source-bit-depth",
+        type=int,
+        default=None,
+        help="Source bit depth",
+    )
+    daemon_parser.add_argument(
+        "--source-frame-ms",
+        type=int,
+        default=None,
+        help="Source frame size in milliseconds",
+    )
+    daemon_parser.add_argument(
+        "--source-sine-hz",
+        type=float,
+        default=None,
+        help="Sine wave frequency for synthetic source",
+    )
+    daemon_parser.add_argument(
+        "--signal-threshold-db",
+        type=float,
+        default=None,
+        help="Signal threshold in dB",
+    )
+    daemon_parser.add_argument(
+        "--signal-hold",
+        type=float,
+        default=None,
+        help="Signal hold in milliseconds",
+    )
+    _add_source_control_hook_args(daemon_parser)
+
+    source_parser = subparsers.add_parser("source", help="Run a source role client")
+    source_subparsers = source_parser.add_subparsers(dest="source_command")
+    source_run_parser = source_subparsers.add_parser("run", help="Start a source client")
+    source_run_parser.add_argument("--url", required=True, help="WebSocket URL of Sendspin server")
+    source_run_parser.add_argument("--name", default=None, help="Friendly source name")
+    source_run_parser.add_argument("--id", default=None, help="Source client id")
+    source_run_parser.add_argument(
+        "--source-input",
+        choices=["sine", "linein"],
+        default="sine",
+        help="Audio input source (default: sine)",
+    )
+    source_run_parser.add_argument(
+        "--source-device",
+        type=str,
+        default=None,
+        help="Input device name or index for line-in capture",
+    )
+    source_run_parser.add_argument(
+        "--source-codec",
+        choices=["pcm", "opus", "flac"],
+        default="pcm",
+        help="Audio codec to advertise (default: pcm)",
+    )
+    source_run_parser.add_argument("--source-sample-rate", type=int, default=48000)
+    source_run_parser.add_argument("--source-channels", type=int, default=1)
+    source_run_parser.add_argument("--source-bit-depth", type=int, default=16)
+    source_run_parser.add_argument("--source-frame-ms", type=int, default=20)
+    source_run_parser.add_argument("--source-sine-hz", type=float, default=440.0)
+    source_run_parser.add_argument("--signal-threshold-db", type=float, default=-45.0)
+    source_run_parser.add_argument("--signal-hold", type=float, default=300.0)
+    _add_source_control_hook_args(source_run_parser)
 
     # Default behavior (client mode) - existing arguments
     parser.add_argument(
@@ -231,6 +437,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--list-audio-devices",
         action="store_true",
         help="List available audio output devices and exit",
+    )
+    parser.add_argument(
+        "--list-input-devices",
+        action="store_true",
+        help="List available audio input devices and exit",
     )
     parser.add_argument(
         "--list-servers",
@@ -350,6 +561,28 @@ def _resolve_audio_device(device_arg: str | None) -> AudioDevice:
     return device
 
 
+def _resolve_input_defaults(device_arg: str | int | None) -> tuple[int | None, int | None]:
+    """Resolve sample-rate/channels defaults from selected input device."""
+    try:
+        import sounddevice as sd
+    except Exception:  # noqa: BLE001
+        return None, None
+
+    try:
+        if device_arg is None:
+            device_index = sd.default.device[0]
+        elif isinstance(device_arg, str) and device_arg.isdigit():
+            device_index = int(device_arg)
+        else:
+            device_index = device_arg
+        info = sd.query_devices(device_index, kind="input")
+        rate = int(info.get("default_samplerate", 0)) or None
+        channels = int(info.get("max_input_channels", 0)) or None
+        return rate, channels
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
 def _resolve_client_info(client_id: str | None, client_name: str | None) -> tuple[str, str]:
     """Determine client ID and name, using hostname as fallback."""
     if client_id is not None and client_name is not None:
@@ -363,6 +596,148 @@ def _resolve_client_info(client_id: str | None, client_name: str | None) -> tupl
         client_id or f"sendspin-cli-{hostname}",
         client_name or hostname,
     )
+
+
+def _resolve_role_client_info(
+    client_id: str | None, client_name: str | None, *, prefix: str
+) -> tuple[str, str]:
+    """Resolve client id/name for non-default roles."""
+    if client_id is not None and client_name is not None:
+        return client_id, client_name
+    hostname = socket.gethostname() or "unknown"
+    return (
+        client_id or f"{prefix}-{hostname}",
+        client_name or hostname,
+    )
+
+
+async def _run_source_mode(args: argparse.Namespace) -> int:
+    """Run a source-only client."""
+    from aiosendspin.client import SendspinClient
+    from aiosendspin.models.source import (
+        ClientHelloSourceSupport,
+        InputStreamRequestFormatSource,
+        SourceCommandPayload,
+        SourceFeatures,
+        SourceFormat,
+        SourceStateType,
+    )
+    from aiosendspin.models.types import AudioCodec, Roles
+    from sendspin.source_stream import SourceStreamConfig, SourceStreamer
+
+    client_id, client_name = _resolve_role_client_info(args.id, args.name, prefix="sendspin-source")
+    if args.source_device is not None and args.source_input == "sine":
+        args.source_input = "linein"
+
+    if args.source_device is not None and args.source_input == "linein":
+        if args.source_sample_rate == 48000 and args.source_channels == 1:
+            default_rate, default_channels = _resolve_input_defaults(args.source_device)
+            if default_rate:
+                args.source_sample_rate = default_rate
+            if default_channels:
+                args.source_channels = default_channels
+
+    source_support = ClientHelloSourceSupport(
+        supported_formats=[
+            SourceFormat(
+                codec=AudioCodec(args.source_codec),
+                channels=args.source_channels,
+                sample_rate=args.source_sample_rate,
+                bit_depth=args.source_bit_depth,
+            )
+        ],
+        controls=_resolve_source_controls(args),
+        features=SourceFeatures(level=True, line_sense=True),
+    )
+
+    if args.source_codec != "pcm":
+        raise CLIError("Source demo currently only supports PCM frame generation")
+
+    client_kwargs: dict[str, Any] = {
+        "client_id": client_id,
+        "client_name": client_name,
+        "roles": [Roles("source@v1")],
+        "device_info": get_device_info(),
+        "source_support": source_support,
+    }
+    client = SendspinClient(**client_kwargs)
+    client_any = cast("Any", client)
+
+    streaming = asyncio.Event()
+    connected_event = asyncio.Event()
+    device = args.source_device
+    if isinstance(device, str) and device.isdigit():
+        device = int(device)
+
+    streamer = SourceStreamer(
+        client,
+        SourceStreamConfig(
+            codec=AudioCodec(args.source_codec),
+            input=args.source_input,
+            device=device,
+            sample_rate=args.source_sample_rate,
+            channels=args.source_channels,
+            bit_depth=args.source_bit_depth,
+            frame_ms=args.source_frame_ms,
+            signal_threshold_db=args.signal_threshold_db,
+            signal_hold_ms=args.signal_hold,
+            sine_hz=args.source_sine_hz,
+            control_hooks=_resolve_source_control_hooks(args),
+            hook_client_id=client_id,
+            hook_client_name=client_name,
+            hook_server_url=args.url,
+        ),
+        logger=LOGGER,
+    )
+
+    def _on_source_command(payload: SourceCommandPayload) -> None:
+        create_task(streamer.handle_source_command(payload, streaming))
+
+    def _on_format_request(payload: InputStreamRequestFormatSource) -> None:
+        create_task(streamer.handle_format_request(payload))
+
+    client_any.add_source_command_listener(_on_source_command)
+    client_any.add_input_stream_request_format_listener(_on_format_request)
+
+    def _on_disconnect() -> None:
+        streaming.clear()
+        connected_event.clear()
+
+    client.add_disconnect_listener(_on_disconnect)
+
+    async def _connect_loop() -> None:
+        backoff = 1.0
+        while True:
+            if not client.connected:
+                try:
+                    LOGGER.info("Connecting to Sendspin server at %s", args.url)
+                    await client.connect(args.url)
+                    connected_event.set()
+                    backoff = 1.0
+                    initial_state = (
+                        SourceStateType.STREAMING if streaming.is_set() else SourceStateType.IDLE
+                    )
+                    if streaming.is_set():
+                        await streamer.send_input_stream_start()
+                    await streamer.send_state(initial_state)
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.warning("Source connection failed: %s", err)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2.0, 30.0)
+                    continue
+            await asyncio.sleep(1.0)
+
+    connect_task = create_task(_connect_loop())
+    stream_task = create_task(streamer.run(streaming))
+    try:
+        await asyncio.gather(connect_task, stream_task)
+    except asyncio.CancelledError:
+        return 0
+    finally:
+        connect_task.cancel()
+        stream_task.cancel()
+        await client.disconnect()
+    return 0
 
 
 async def _run_serve_mode(args: argparse.Namespace) -> int:
@@ -411,6 +786,15 @@ async def _run_daemon_mode(args: argparse.Namespace, settings: ClientSettings) -
     from sendspin.daemon.daemon import DaemonArgs, SendspinDaemon
 
     client_id, client_name = _resolve_client_info(args.id, args.name)
+    if args.source_device is not None and args.source_input == "sine":
+        args.source_input = "linein"
+    if args.source_device is not None and args.source_input == "linein":
+        if args.source_sample_rate == 48000 and args.source_channels == 2:
+            default_rate, default_channels = _resolve_input_defaults(args.source_device)
+            if default_rate:
+                args.source_sample_rate = default_rate
+            if default_channels:
+                args.source_channels = default_channels
 
     daemon_args = DaemonArgs(
         audio_device=_resolve_audio_device(args.audio_device),
@@ -423,6 +807,23 @@ async def _run_daemon_mode(args: argparse.Namespace, settings: ClientSettings) -
         use_mpris=args.use_mpris,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
+        source_enabled=args.source,
+        source_input=args.source_input,
+        source_device=args.source_device,
+        source_codec=args.source_codec,
+        source_sample_rate=args.source_sample_rate,
+        source_channels=args.source_channels,
+        source_bit_depth=args.source_bit_depth,
+        source_frame_ms=args.source_frame_ms,
+        source_sine_hz=args.source_sine_hz,
+        source_signal_threshold_db=args.signal_threshold_db,
+        source_signal_hold_ms=args.signal_hold,
+        source_hook_play=args.source_hook_play,
+        source_hook_pause=args.source_hook_pause,
+        source_hook_next=args.source_hook_next,
+        source_hook_previous=args.source_hook_previous,
+        source_hook_activate=args.source_hook_activate,
+        source_hook_deactivate=args.source_hook_deactivate,
     )
 
     daemon = SendspinDaemon(daemon_args)
@@ -444,9 +845,28 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
+    if args.command == "source":
+        if args.source_command != "run":
+            print("Error: source requires a subcommand (use: source run)")
+            return 1
+        try:
+            return asyncio.run(_run_source_mode(args))
+        except KeyboardInterrupt:
+            return 0
+        except CLIError as e:
+            print(f"Error: {e}")
+            return e.exit_code
+        except Exception as e:
+            print(f"Source error: {e}")
+            traceback.print_exc()
+            return 1
+
     # Handle --list-audio-devices before starting async runtime
     if args.list_audio_devices:
         list_audio_devices()
+        return 0
+    if args.list_input_devices:
+        list_input_devices()
         return 0
 
     if args.list_servers:
@@ -506,6 +926,42 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.hook_start = settings.hook_start
     if args.hook_stop is None:
         args.hook_stop = settings.hook_stop
+
+    if is_daemon:
+        if args.source is None:
+            args.source = settings.source_enabled
+        if args.source_input is None:
+            args.source_input = settings.source_input
+        if args.source_device is None:
+            args.source_device = settings.source_device
+        if args.source_codec is None:
+            args.source_codec = settings.source_codec
+        if args.source_sample_rate is None:
+            args.source_sample_rate = settings.source_sample_rate
+        if args.source_channels is None:
+            args.source_channels = settings.source_channels
+        if args.source_bit_depth is None:
+            args.source_bit_depth = settings.source_bit_depth
+        if args.source_frame_ms is None:
+            args.source_frame_ms = settings.source_frame_ms
+        if args.source_sine_hz is None:
+            args.source_sine_hz = settings.source_sine_hz
+        if args.signal_threshold_db is None:
+            args.signal_threshold_db = settings.source_signal_threshold_db
+        if args.signal_hold is None:
+            args.signal_hold = settings.source_signal_hold_ms
+        if args.source_hook_play is None:
+            args.source_hook_play = settings.source_hook_play
+        if args.source_hook_pause is None:
+            args.source_hook_pause = settings.source_hook_pause
+        if args.source_hook_next is None:
+            args.source_hook_next = settings.source_hook_next
+        if args.source_hook_previous is None:
+            args.source_hook_previous = settings.source_hook_previous
+        if args.source_hook_activate is None:
+            args.source_hook_activate = settings.source_hook_activate
+        if args.source_hook_deactivate is None:
+            args.source_hook_deactivate = settings.source_hook_deactivate
 
     # Set up logging with resolved log level
     logging.basicConfig(level=getattr(logging, args.log_level))

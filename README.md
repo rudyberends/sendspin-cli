@@ -4,11 +4,12 @@
 
 Connect to any [Sendspin](https://www.sendspin-audio.com) server and instantly turn your computer into an audio target that can participate in multi-room audio.
 
-Sendspin CLI includes three apps:
+Sendspin CLI includes four apps:
 
 - **`sendspin`** - Terminal client for interactive use
 - **`sendspin daemon`** - Background daemon for headless devices
 - **`sendspin serve`** - Host a Sendspin party to demo Sendspin
+- **`sendspin source run`** - Run a source-only source@v1 input client
 
 <img width="1144" height="352" alt="image" src="https://github.com/user-attachments/assets/5a649bde-76f6-486f-b3aa-0af5e49e0ac7" />
 
@@ -30,6 +31,12 @@ Host a Sendspin party
 uvx sendspin serve --demo
 uvx sendspin serve /path/to/media.mp3
 uvx sendspin serve https://retro.dancewave.online/retrodance.mp3
+```
+
+Start a source-only input client
+
+```bash
+uvx sendspin source run --url ws://127.0.0.1:8928/sendspin --source-input sine
 ```
 
 ## Installation
@@ -123,7 +130,24 @@ Settings are stored in `~/.config/sendspin/`:
   "audio_device": "2",
   "log_level": "INFO",
   "listen_port": 8927,
-  "use_mpris": true
+  "use_mpris": true,
+  "source_enabled": false,
+  "source_input": "linein",
+  "source_device": null,
+  "source_codec": "pcm",
+  "source_sample_rate": 48000,
+  "source_channels": 2,
+  "source_bit_depth": 16,
+  "source_frame_ms": 20,
+  "source_sine_hz": 440.0,
+  "source_signal_threshold_db": -45.0,
+  "source_signal_hold_ms": 300.0,
+  "source_hook_play": null,
+  "source_hook_pause": null,
+  "source_hook_next": null,
+  "source_hook_previous": null,
+  "source_hook_activate": null,
+  "source_hook_deactivate": null
 }
 ```
 
@@ -154,6 +178,23 @@ Settings are stored in `~/.config/sendspin/`:
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
+| `source_enabled` | boolean | daemon | Enable source@v1 role on daemon |
+| `source_input` | string | daemon | Source input type: `linein` or `sine` |
+| `source_device` | string | daemon | Input capture device name/index for `linein` |
+| `source_codec` | string | daemon | Advertised source codec (`pcm`, `opus`, `flac`) |
+| `source_sample_rate` | integer | daemon | Source sample rate in Hz |
+| `source_channels` | integer | daemon | Source channels |
+| `source_bit_depth` | integer | daemon | Source bit depth |
+| `source_frame_ms` | integer | daemon | Source frame size in ms |
+| `source_sine_hz` | float | daemon | Sine frequency when `source_input=sine` |
+| `source_signal_threshold_db` | float | daemon | Signal detect threshold in dB |
+| `source_signal_hold_ms` | float | daemon | Hold time before signal transition |
+| `source_hook_play` | string | daemon | Hook command for source `play` control |
+| `source_hook_pause` | string | daemon | Hook command for source `pause` control |
+| `source_hook_next` | string | daemon | Hook command for source `next` control |
+| `source_hook_previous` | string | daemon | Hook command for source `previous` control |
+| `source_hook_activate` | string | daemon | Hook command for source `activate` control |
+| `source_hook_deactivate` | string | daemon | Hook command for source `deactivate` control |
 | `source` | string | serve | Default audio source (file path or URL, ffmpeg input) |
 | `source_format` | string | serve | ffmpeg container format for audio source |
 | `clients` | array | serve | Client URLs to connect to (`--client`) |
@@ -208,6 +249,20 @@ sendspin --audio-device "MacBook"
 
 This is particularly useful when running `sendspin daemon` on headless devices or when you want to route audio to a specific output.
 
+### Audio Input Device Selection
+
+For source mode and daemon source capture:
+
+```bash
+sendspin --list-input-devices
+```
+
+Then select a device for source capture:
+
+```bash
+sendspin source run --url ws://127.0.0.1:8928/sendspin --source-input linein --source-device 0
+```
+
 ### Adjusting Playback Delay
 
 The player supports adjusting playback delay to compensate for audio hardware latency or achieve better synchronization across devices.
@@ -232,6 +287,67 @@ The daemon runs in the background and logs status messages to stdout. It accepts
 sendspin daemon --name "Kitchen" --audio-device 2
 ```
 
+Enable source@v1 on daemon:
+
+```bash
+sendspin daemon --source --source-input linein --source-device 0
+```
+
+With synthetic input (no capture device required):
+
+```bash
+sendspin daemon --source --source-input sine --source-sine-hz 440
+```
+
+Daemon source options:
+- `--source` / `--no-source`
+- `--source-input {linein,sine}`
+- `--source-device <name|index>`
+- `--source-codec {pcm,opus,flac}`
+- `--source-sample-rate <hz>`
+- `--source-channels <n>`
+- `--source-bit-depth <bits>`
+- `--source-frame-ms <ms>`
+- `--source-sine-hz <hz>`
+- `--signal-threshold-db <db>`
+- `--signal-hold <ms>`
+- `--source-hook-play <command>`
+- `--source-hook-pause <command>`
+- `--source-hook-next <command>`
+- `--source-hook-previous <command>`
+- `--source-hook-activate <command>`
+- `--source-hook-deactivate <command>`
+
+### Source-Only Mode
+
+Run a dedicated source client without player/TUI:
+
+```bash
+sendspin source run --url ws://127.0.0.1:8928/sendspin --source-input sine
+```
+
+Line-in capture:
+
+```bash
+sendspin source run --url ws://127.0.0.1:8928/sendspin \
+  --source-input linein --source-device 0 \
+  --source-sample-rate 44100 --source-channels 2 --source-bit-depth 16 \
+  --signal-threshold-db -45 --signal-hold 300
+```
+
+Optional source control hooks:
+
+```bash
+sendspin source run --url ws://127.0.0.1:8928/sendspin \
+  --source-input linein --source-device 0 \
+  --source-hook-play "./play.sh" \
+  --source-hook-pause "./pause.sh" \
+  --source-hook-next "./next.sh" \
+  --source-hook-previous "./prev.sh" \
+  --source-hook-activate "./power_on.sh" \
+  --source-hook-deactivate "./power_off.sh"
+```
+
 ### Hooks
 
 You can run external commands when audio streams start or stop. This is useful for controlling amplifiers, lighting, or other home automation:
@@ -253,6 +369,14 @@ Hooks receive these environment variables:
 - `SENDSPIN_SERVER_URL` - Connected server URL. Only available if client initiated the connection to the server.
 - `SENDSPIN_CLIENT_ID` - Client identifier
 - `SENDSPIN_CLIENT_NAME` - Client friendly name
+
+Source control hooks use the same environment variables, with `SENDSPIN_EVENT` set to:
+- `source_play`
+- `source_pause`
+- `source_next`
+- `source_previous`
+- `source_activate`
+- `source_deactivate`
 
 ### Debugging & Troubleshooting
 
