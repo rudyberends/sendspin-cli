@@ -8,6 +8,7 @@ import logging
 import re
 import shutil
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sendspin.volume_controller import VolumeChangeCallback
@@ -20,6 +21,12 @@ logger = logging.getLogger(__name__)
 AVAILABLE = sys.platform.startswith("linux") and shutil.which("amixer") is not None
 
 _HW_CARD_RE = re.compile(r"\bhw:(\d+)")
+# ALSA's by-name form: hw:CARD=CDCACM,DEV=0 -- card ids are alphanumeric plus _-
+# No \b before hw: the plugin prefixes (plughw:, dmix:CARD=) have no word
+# boundary there, and they name a real card just as well.
+_HW_CARD_NAME_RE = re.compile(r"hw:CARD=([A-Za-z0-9_-]+)")
+_PROC_CARD_RE = re.compile(r"card(\d+)")
+PROC_ASOUND = Path("/proc/asound")
 
 _SCONTROL_RE = re.compile(r"Simple mixer control '([^']+)'")
 _VOLUME_RE = re.compile(r"\[(\d+)%\]")
@@ -35,16 +42,41 @@ _POLL_INTERVAL_S = 1.0
 _PREFERRED_ELEMENTS: tuple[str, ...] = ("Digital", "Master", "PCM")
 
 
+def _card_number_for_name(card_id: str) -> int | None:
+    """Resolve an ALSA card id to its index via /proc/asound/<id>.
+
+    ALSA keeps a symlink per card id there, pointing at ``card<N>``. That is the
+    same mapping ``hw:CARD=<id>`` uses, so it stays correct when card numbering
+    changes -- which it does across reboots whenever USB probe order shifts.
+    """
+    try:
+        target = (PROC_ASOUND / card_id).resolve().name
+    except OSError:
+        return None
+    m = _PROC_CARD_RE.fullmatch(target)
+    return int(m.group(1)) if m else None
+
+
 def parse_alsa_card(device_name: str) -> int | None:
-    """Extract the ALSA card number from a PortAudio device name.
+    """Extract the ALSA card number from a PortAudio or ALSA device name.
 
     PortAudio names hardware devices like:
       "snd_rpi_hifiberry_dacplus: ... (hw:1,0)"
 
+    Also accepts ALSA's by-name form, ``hw:CARD=CDCACM,DEV=0``, which is the
+    robust way to pin a device: card *numbers* move when USB probe order changes,
+    so a device that was hw:3 can come back as hw:1 after a reboot. Without this,
+    naming a card that way silently costs hardware volume control -- the card
+    cannot be identified, so the mixer is never found and playback falls back to
+    software volume, attenuating in the samples themselves.
+
     Returns the card index or None for virtual devices.
     """
     m = _HW_CARD_RE.search(device_name)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = _HW_CARD_NAME_RE.search(device_name)
+    return _card_number_for_name(m.group(1)) if m else None
 
 
 async def _has_playback_volume(card: int, element: str) -> bool:

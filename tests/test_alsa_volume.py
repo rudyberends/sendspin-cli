@@ -62,6 +62,37 @@ def test_parse_card_returns_none_for_virtual_device() -> None:
     assert parse_alsa_card("dmix") is None
 
 
+def _fake_proc_asound(monkeypatch, tmp_path, cards: dict[str, int]) -> None:
+    """Stand in for /proc/asound, where ALSA symlinks each card id to card<N>."""
+    for card_id, index in cards.items():
+        (tmp_path / f"card{index}").mkdir(exist_ok=True)
+        (tmp_path / card_id).symlink_to(tmp_path / f"card{index}")
+    monkeypatch.setattr(_alsa_mod, "PROC_ASOUND", tmp_path)
+
+
+def test_parse_card_from_by_name_device(monkeypatch, tmp_path) -> None:
+    _fake_proc_asound(monkeypatch, tmp_path, {"CDCACM": 1, "sndrpihifiberry": 0})
+    assert parse_alsa_card("hw:CARD=CDCACM,DEV=0") == 1
+    assert parse_alsa_card("hw:CARD=sndrpihifiberry,DEV=0") == 0
+
+
+def test_parse_card_from_by_name_plugin_device(monkeypatch, tmp_path) -> None:
+    # plughw: and friends name a real card too, and have no word boundary at hw:
+    _fake_proc_asound(monkeypatch, tmp_path, {"CDCACM": 2})
+    assert parse_alsa_card("plughw:CARD=CDCACM,DEV=0") == 2
+
+
+def test_parse_card_by_name_unknown_card(monkeypatch, tmp_path) -> None:
+    _fake_proc_asound(monkeypatch, tmp_path, {"CDCACM": 1})
+    assert parse_alsa_card("hw:CARD=doesnotexist,DEV=0") is None
+
+
+def test_parse_card_prefers_numeric_form(monkeypatch, tmp_path) -> None:
+    # A numeric hw:N is unambiguous, so it wins over any name in the same string.
+    _fake_proc_asound(monkeypatch, tmp_path, {"CDCACM": 1})
+    assert parse_alsa_card("hw:3,0 hw:CARD=CDCACM") == 3
+
+
 # -- find_mixer_element -------------------------------------------------------
 
 
