@@ -115,6 +115,7 @@ Settings are stored in `~/.config/sendspin/`:
   "listen_port": 8927,
   "use_mpris": true,
   "use_hardware_volume": true,
+  "alsa_volume_mapped": true,
   "hook_set_volume": "/usr/local/bin/set-avr-volume",
   "manufacturer": "Acme Corp",
   "product_name": "Living Room Speaker",
@@ -149,6 +150,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `use_hardware_volume` | boolean | TUI/daemon | Control hardware/system output volume instead of software volume (`--hardware-volume true/false`). Default: on for daemon (if available), off for TUI |
+| `alsa_volume_mapped` | boolean | TUI/daemon | Map volume percentages perceptually onto the ALSA mixer (`--alsa-volume-mapped true/false`). Set false for a mixer already calibrated in dB. Default: true |
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
@@ -253,6 +255,24 @@ Hardware volume is **on by default in daemon mode** and **off by default in TUI 
 sendspin --hardware-volume true             # Enable for TUI
 sendspin daemon --hardware-volume false     # Disable for daemon
 ```
+
+#### ALSA mixers already calibrated in dB
+
+When volume goes to an ALSA mixer, percentages are mapped perceptually (`amixer -M`),
+because most DAC HATs have a mixer that is linear in register steps — without the
+mapping, 50% lands halfway down the register and sounds far quieter than expected.
+
+Some mixers are already calibrated in dB, one step per dB. A B&O BeoLab over USB
+reports `0-90` spanning `-90..0 dB`, for instance. There the hardware does the
+perceptual mapping itself, so applying a second curve on top means a percentage no
+longer corresponds to a known attenuation. Address such a mixer directly with:
+
+```bash
+sendspin daemon --alsa-volume-mapped false
+```
+
+Check which kind you have with `amixer -c <card> sget <element>`: if the dB range
+matches the step count, it is calibrated in dB.
 
 If your real volume control lives on another device, you can hand volume changes off to a script instead:
 

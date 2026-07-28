@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import NoReturn
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 
@@ -14,7 +14,6 @@ from sendspin.alsa_volume import (
     find_mixer_element,
     parse_alsa_card,
 )
-
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -200,6 +199,34 @@ async def test_set_state_calls_amixer_sset(monkeypatch) -> None:
     ctrl = AlsaVolumeController(card=1, element="Digital")
     await ctrl.set_state(75, muted=False)
     assert calls == [("amixer", "-M", "-c", "1", "sset", "Digital", "playback", "75%", "unmute")]
+
+
+async def test_set_state_unmapped_omits_dash_m(monkeypatch) -> None:
+    """mapped=False addresses a dB-calibrated mixer directly, without -M."""
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(argv)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    ctrl = AlsaVolumeController(card=1, element="PCM", mapped=False)
+    await ctrl.set_state(75, muted=False)
+    assert calls == [("amixer", "-c", "1", "sset", "PCM", "playback", "75%", "unmute")]
+
+
+async def test_get_state_unmapped_omits_dash_m(monkeypatch) -> None:
+    """Reads must use the same scale as writes, or the two disagree."""
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(argv)
+        return _FakeProcess(stdout=b"  Mono: Playback 70 [75%] [-20.00dB] [on]\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    ctrl = AlsaVolumeController(card=1, element="PCM", mapped=False)
+    assert await ctrl.get_state() == (75, False)
+    assert calls == [("amixer", "-c", "1", "sget", "PCM", "playback")]
 
 
 async def test_set_state_muted(monkeypatch) -> None:

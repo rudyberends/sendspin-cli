@@ -165,10 +165,21 @@ class AlsaVolumeController:
     on the ALSA card, giving true hardware volume control on DAC HATs.
     """
 
-    def __init__(self, card: int, element: str) -> None:
+    def __init__(self, card: int, element: str, *, mapped: bool = True) -> None:
         self._card = str(card)
         self._element = element
         self._watch_task: asyncio.Task[None] | None = None
+        # amixer's -M: spread percentages perceptually rather than linearly over
+        # the raw register range. Right for the DAC HATs this module targets,
+        # whose mixers are linear in register steps -- without it 50% lands
+        # halfway down the register and sounds far quieter than expected.
+        #
+        # Wrong for a mixer that is already calibrated in dB, where one step is
+        # one dB (a B&O BeoLab over USB, for instance: 0-90 spanning -90..0 dB).
+        # There the hardware does the perceptual mapping itself, and -M applies a
+        # second curve on top, so a percentage no longer corresponds to a known
+        # attenuation. Pass mapped=False to address such a mixer directly.
+        self._mapped_args = ("-M",) if mapped else ()
 
     async def set_state(self, volume: int, *, muted: bool) -> None:
         """Set ALSA mixer volume and mute state."""
@@ -178,7 +189,7 @@ class AlsaVolumeController:
         mute_arg = "mute" if muted else "unmute"
         proc = await asyncio.create_subprocess_exec(
             "amixer",
-            "-M",
+            *self._mapped_args,
             "-c",
             self._card,
             "sset",
@@ -200,7 +211,7 @@ class AlsaVolumeController:
         """Read ALSA mixer volume and mute state."""
         proc = await asyncio.create_subprocess_exec(
             "amixer",
-            "-M",
+            *self._mapped_args,
             "-c",
             self._card,
             "sget",

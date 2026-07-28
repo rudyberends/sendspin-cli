@@ -16,11 +16,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sendspin.alsa_volume import AVAILABLE as ALSA_AVAILABLE
 from sendspin.alsa_volume import (
     AlsaVolumeController,
+)
+from sendspin.alsa_volume import (
     async_check_alsa_available as alsa_volume_check_available,
 )
 from sendspin.hardware_volume import AVAILABLE as HW_VOLUME_AVAILABLE
-from sendspin.hardware_volume import HardwareVolumeController
 from sendspin.hardware_volume import UNAVAILABLE_REASON as HW_VOLUME_UNAVAILABLE_REASON
+from sendspin.hardware_volume import HardwareVolumeController
 from sendspin.hardware_volume import async_check_available as hw_volume_check_available
 from sendspin.hook_volume import HookVolumeController
 from sendspin.settings import ClientSettings, get_client_settings, get_serve_settings
@@ -203,6 +205,17 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    target.add_argument(
+        "--alsa-volume-mapped",
+        default=default,
+        type=arg_str_to_bool,
+        metavar="{true,false}",
+        help=(
+            "Map volume percentages perceptually onto the ALSA mixer (amixer -M, "
+            "default true). Set false for a mixer already calibrated in dB, where "
+            "one step is one dB, so percentages address it directly"
+        ),
     )
     target.add_argument(
         "--manufacturer",
@@ -440,6 +453,17 @@ def _build_parser() -> argparse.ArgumentParser:
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    daemon_parser.add_argument(
+        "--alsa-volume-mapped",
+        default=None,
+        type=arg_str_to_bool,
+        metavar="{true,false}",
+        help=(
+            "Map volume percentages perceptually onto the ALSA mixer (amixer -M, "
+            "default true). Set false for a mixer already calibrated in dB, where "
+            "one step is one dB, so percentages address it directly"
+        ),
     )
     daemon_parser.add_argument(
         "--hook-start",
@@ -833,6 +857,10 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
             args.hardware_volume = settings.use_hardware_volume
         else:
             args.hardware_volume = is_daemon and (HW_VOLUME_AVAILABLE or ALSA_AVAILABLE)
+    if getattr(args, "alsa_volume_mapped", None) is None:
+        args.alsa_volume_mapped = (
+            settings.alsa_volume_mapped if settings.alsa_volume_mapped is not None else True
+        )
     if args.hook_set_volume is None:
         args.hook_set_volume = settings.hook_set_volume
     if not args.hook_set_volume and args.hardware_volume and not HW_VOLUME_AVAILABLE:
@@ -882,7 +910,11 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
                 card,
                 element,
             )
-            volume_controller = AlsaVolumeController(card=card, element=element)
+            volume_controller = AlsaVolumeController(
+                card=card,
+                element=element,
+                mapped=getattr(args, "alsa_volume_mapped", True),
+            )
         elif await hw_volume_check_available(audio_device):
             # Fall back to PulseAudio for virtual devices or when ALSA has no mixer.
             volume_controller = HardwareVolumeController(audio_device)
